@@ -162,12 +162,12 @@ After running both the backend and frontend, you can interact with TextMorph thr
 - Once uploaded, the text content will be analyzed for readability.
 - You can also download previously uploaded files if needed.
 
-### 3. Summarization (Future / Optional)
+### 3. Summarization (Future)
 
 - Large texts can be summarized using pre-trained models integrated into TextMorph (if implemented).
 - Simply input text manually or upload a file and click **Summarize** (button provided in dashboard when feature is available).
 
-### 4. Paraphrasing
+### 4. Paraphrasing (Future)
 
 - Go to the **Paraphrasing** tab in the dashboard.
 - Enter or upload text you want to rephrase.
@@ -191,9 +191,13 @@ TextMorph/
 │ ├── api.py # FastAPI endpoints for file upload/download
 │ ├── db.py # Database connection utility
 │ └── __init__.py
+│ └── login.py
+│ └── forgotpassword.py
+│ └── signup.py
 │
-├── frontend/ # Streamlit frontend code
+├── webapp/ # Streamlit frontend code
 │ └── dashboard.py # Main dashboard for manual input and file upload
+│ └── profile.py
 │
 ├── manual_inputs/ # Folder to save manual text inputs
 │
