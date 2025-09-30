@@ -27,6 +27,59 @@ def get_db_connection():
     except mysql.connector.Error as err:
         raise Exception(f"Database connection failed: {err}")
 
+
+class ReadabilityEvaluation(BaseModel):
+    user_email: str
+    text_content: str
+    scores: dict
+    source: str          # "manual" or "file"
+    filename: str = None
+
+@app.post("/store_readability")
+def store_readability(evaluation: ReadabilityEvaluation):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO readability
+            (user_email, text_content, scores, source, filename, created_at)
+            VALUES (%s,%s,%s,%s,%s,%s)
+        """, (
+            evaluation.user_email,
+            evaluation.text_content,
+            json.dumps(evaluation.scores),
+            evaluation.source,
+            evaluation.filename,
+            datetime.now()
+        ))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "Readability stored successfully"}
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=400, detail=f"MySQL Error: {err}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected Error: {str(e)}")
+
+@app.get("/history/readability/{user_email}")
+def get_readability_history(user_email: str):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT id, text_content, scores, source, filename, created_at
+            FROM readability
+            WHERE user_email=%s
+            ORDER BY created_at DESC
+        """, (user_email,))
+        data = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching readability history: {str(e)}")
+
+
 def save_file_to_db(user_email, filename, filetype, filesize, data):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -193,55 +246,3 @@ def get_paraphrase_history(user_email: str):
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching paraphrase history: {str(e)}")
-
-
-@app.get("/history/uploaded_files/{user_email}")
-def get_readability_history(user_email: str):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT id, filename, filetype, filesize, uploaded_at
-            FROM uploaded_files
-            WHERE user_email=%s
-            ORDER BY uploaded_at DESC
-        """, (user_email,))
-        files = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        return files
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching readability history: {str(e)}")
-    
-@app.get("/history/uploaded_files/content/{file_id}")
-def get_uploaded_file_content(file_id: int):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT filename, filetype, filedata
-            FROM uploaded_files
-            WHERE id=%s
-        """, (file_id,))
-        file = cursor.fetchone()
-        cursor.close()
-        conn.close()
-
-        if not file:
-            raise HTTPException(status_code=404, detail="File not found")
-
-        content = ""
-        if "text" in file["filetype"]:
-            content = file["filedata"].decode("utf-8")
-        elif "pdf" in file["filetype"]:
-            import pdfplumber
-            with pdfplumber.open(io.BytesIO(file["filedata"])) as pdf:
-                content = "\n".join(page.extract_text() or "" for page in pdf.pages)
-        else:
-            content = f"Cannot display this file type: {file['filetype']}"
-
-        return {"filename": file["filename"], "content": content}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching file content: {str(e)}")
-

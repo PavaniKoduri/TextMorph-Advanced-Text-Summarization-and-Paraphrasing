@@ -17,3 +17,14 @@ Thumbs.db
 .env
 
 manual_inputs
+
+# --- Datasets ---
+datasets/*.json
+!datasets/.gitkeep
+
+# --- Results ---
+results/*
+!results/.gitkeep
+
+# --- Model checkpoints ---
+saved_paraphrasing_model/
