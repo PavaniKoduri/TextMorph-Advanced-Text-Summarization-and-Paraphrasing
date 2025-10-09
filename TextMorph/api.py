@@ -157,13 +157,17 @@ def store_evaluation(evaluation: SummaryEvaluation):
             evaluation.model_used,
             evaluation.summary_length,
             evaluation.reference_summary,
-            json.dumps(evaluation.rouge_scores), 
+            json.dumps(evaluation.rouge_scores),
             datetime.now()
         ))
+
+        summary_id = cursor.lastrowid  # ✅ Capture inserted ID
         conn.commit()
         cursor.close()
         conn.close()
-        return {"message": "Evaluation stored successfully"}
+
+        return {"message": "Summary stored successfully", "summary_id": summary_id}
+
     except mysql.connector.Error as err:
         raise HTTPException(status_code=400, detail=f"MySQL Error: {err}")
     except Exception as e:
@@ -186,6 +190,8 @@ def store_paraphrase(evaluation: ParaphraseEvaluation):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+
+        # ✅ Store all paraphrased options in one row as JSON
         cursor.execute("""
             INSERT INTO paraphrases 
             (user_email, original_text, paraphrased_options, model_used, creativity, complexity_level, rouge_scores, readability_scores, created_at)
@@ -193,18 +199,22 @@ def store_paraphrase(evaluation: ParaphraseEvaluation):
         """, (
             evaluation.user_email,
             evaluation.original_text,
-            json.dumps(evaluation.paraphrased_options),  
+            json.dumps(evaluation.paraphrased_options),  # store list as JSON
             evaluation.model_used,
             evaluation.creativity,
-            evaluation.complexity_level,   # changed here
-            json.dumps(evaluation.rouge_scores),         
-            json.dumps(evaluation.readability_scores),   
+            evaluation.complexity_level,
+            json.dumps(evaluation.rouge_scores),
+            json.dumps(evaluation.readability_scores),
             datetime.now()
         ))
+
         conn.commit()
+        new_id = cursor.lastrowid
         cursor.close()
         conn.close()
-        return {"message": "Paraphrase stored successfully"}
+
+        return {"message": "✅ Paraphrase stored successfully", "paraphrase_id": new_id}
+
     except mysql.connector.Error as err:
         raise HTTPException(status_code=400, detail=f"MySQL Error: {err}")
     except Exception as e:
@@ -246,3 +256,37 @@ def get_paraphrase_history(user_email: str):
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching paraphrase history: {str(e)}")
+
+class Feedback(BaseModel):
+    user_email: str
+    output_type: str  # "summary" or "paraphrase"
+    output_id: int
+    rating: str       # "thumbs_up" or "thumbs_down"
+    comment: str = ""
+
+@app.post("/feedback")
+def store_feedback(fb: Feedback):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO feedback (user_email, output_type, output_id, rating, comment, created_at)
+            VALUES (%s,%s,%s,%s,%s,%s)
+        """, (
+            fb.user_email,
+            fb.output_type,
+            fb.output_id,
+            fb.rating,
+            fb.comment,
+            datetime.now()
+        ))
+        conn.commit()
+        fb_id = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        return {"message": "Feedback stored successfully", "feedback_id": fb_id}
+
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=400, detail=f"MySQL Error: {err}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected Error: {str(e)}")

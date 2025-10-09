@@ -32,6 +32,134 @@ bleu = evaluate.load("bleu")
 rouge = evaluate.load("rouge")
 
 
+import streamlit as st
+import requests
+def feedback_ui(output_type, output_id, user_email):
+    """
+    Beautiful feedback UI — thumbs up/down as clickable buttons, persistent comment box,
+    and smooth submission without page reload.
+    """
+    import requests
+    import time
+    
+    API_URL = "http://127.0.0.1:8000"
+    key_pref = f"fb_{output_type}_{output_id}"
+
+    # ✅ FIX 1: Initialize ALL session states FIRST (before any conditional logic)
+    if f"{key_pref}_rating" not in st.session_state:
+        st.session_state[f"{key_pref}_rating"] = None
+    if f"{key_pref}_comment_area" not in st.session_state:
+        st.session_state[f"{key_pref}_comment_area"] = ""
+    if f"{key_pref}_clear_flag" not in st.session_state:
+        st.session_state[f"{key_pref}_clear_flag"] = False
+    if f"{key_pref}_submitted" not in st.session_state:
+        st.session_state[f"{key_pref}_submitted"] = False
+
+    # ✅ FIX 2: Only clear if clear_flag is True AND not already submitted
+    if st.session_state.get(f"{key_pref}_clear_flag") and not st.session_state[f"{key_pref}_submitted"]:
+        st.session_state[f"{key_pref}_rating"] = None
+        st.session_state[f"{key_pref}_comment_area"] = ""
+        st.session_state[f"{key_pref}_clear_flag"] = False
+        st.session_state[f"{key_pref}_submitted"] = True  # Mark as cleared
+
+    st.markdown("""
+        <style>
+        .feedback-container {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 0.5rem;
+        }
+        .feedback-btn {
+            font-size: 30px;
+            cursor: pointer;
+            transition: transform 0.15s ease, color 0.2s ease;
+        }
+        .feedback-btn:hover {
+            transform: scale(1.2);
+        }
+        .thumbs-up { color: #16a085; }
+        .thumbs-down { color: #e74c3c; }
+        .selected {
+            text-shadow: 0 0 10px rgba(0,0,0,0.3);
+            transform: scale(1.3);
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # UI title
+    st.markdown("#### 💬 What do you think of this output?")
+
+    # ✅ FIX 3: Use form to prevent immediate rerun on button click
+    with st.form(key=f"{key_pref}_form", clear_on_submit=False):
+        # ✅ Custom thumbs buttons (use columns for alignment)
+        col1, col2 = st.columns([1, 6])
+        with col1:
+            st.markdown("<span style='font-size:22px;font-weight:600;'>Rating:</span>", unsafe_allow_html=True)
+        with col2:
+            cols = st.columns(2)
+            with cols[0]:
+                thumbs_up = st.form_submit_button("👍", use_container_width=True)
+                if thumbs_up:
+                    st.session_state[f"{key_pref}_rating"] = "thumbs_up"
+                    st.rerun()  # ✅ Force rerun to update UI immediately
+            
+            with cols[1]:
+                thumbs_down = st.form_submit_button("👎", use_container_width=True)
+                if thumbs_down:
+                    st.session_state[f"{key_pref}_rating"] = "thumbs_down"
+                    st.rerun()  # ✅ Force rerun to update UI immediately
+
+        # Show which button is selected (CSS visual feedback)
+        selected = st.session_state[f"{key_pref}_rating"]
+        if selected:
+            if selected == "thumbs_up":
+                st.markdown("<p style='color:#16a085;font-weight:bold;'>You liked this 👍</p>", unsafe_allow_html=True)
+            else:
+                st.markdown("<p style='color:#e74c3c;font-weight:bold;'>You disliked this 👎</p>", unsafe_allow_html=True)
+
+        # Comment box
+        comment = st.text_area(
+            "Optional feedback:",
+            value=st.session_state[f"{key_pref}_comment_area"],
+            placeholder="Tell us what you liked or didn't like...",
+            key=f"{key_pref}_comment_area"
+        )
+
+        # Submit button (use form-style behavior)
+        submit = st.form_submit_button("Submit Feedback", use_container_width=True)
+
+        if submit:
+            rating = st.session_state[f"{key_pref}_rating"]
+            if not rating:
+                st.warning("Please choose 👍 or 👎 first.")
+            else:
+                payload = {
+                    "user_email": user_email,
+                    "output_type": output_type,
+                    "output_id": output_id,
+                    "rating": rating,
+                    "comment": comment.strip()
+                }
+
+                try:
+                    resp = requests.post(f"{API_URL}/feedback", json=payload, timeout=10)
+                    if resp.status_code == 200:
+                        st.success("✅ Feedback submitted — thank you!")
+
+                        # ✅ FIX 4: Set clear flag but don't clear immediately
+                        st.session_state[f"{key_pref}_clear_flag"] = True
+                        # ✅ Keep the submitted state to prevent premature clearing
+                        st.session_state[f"{key_pref}_submitted"] = False
+
+                    else:
+                        st.error(f"⚠️ Failed to submit: {resp.text}")
+
+                except Exception as e:
+                    st.error(f"Error submitting feedback: {e}")
+    
+
+
 from sentence_transformers import SentenceTransformer, util
 if "sim_model" not in st.session_state:
     st.session_state["sim_model"] = SentenceTransformer("all-MiniLM-L6-v2")
@@ -168,11 +296,16 @@ def store_summary_db(user_email, original_text, summary_text, model_used, summar
     try:
         resp = requests.post(f"{API_URL}/store_evaluation", json=payload, timeout=10)
         if resp.status_code == 200:
-            st.success(f"Summary ({summary_length}) stored successfully in DB")
+            data = resp.json()
+            summary_id = data.get("summary_id", None)
+            st.success(f"✅ Summary stored successfully (ID: {summary_id})")
+            return summary_id
         else:
-            st.error(f"Failed to store summary: {resp.text}")
+            st.error(f"❌ Failed to store summary: {resp.text}")
+            return None
     except requests.exceptions.RequestException as e:
-        st.error(f"Could not connect to backend: {e}")
+        st.error(f"⚠️ Could not connect to backend: {e}")
+        return None
 
 def store_readability_db(user_email, text_content, scores, source="manual", filename=None):
         if filename is None:
@@ -193,6 +326,37 @@ def store_readability_db(user_email, text_content, scores, source="manual", file
                 st.error(f"Failed to store readability: {resp.text}")
         except requests.exceptions.RequestException as e:
             st.error(f"Could not connect to backend: {e}")
+
+def store_paraphrase_db(user_email, original_text, paraphrased_results, model_used, creativity, complexity_level, rouge_scores, readability_scores):
+    API_URL = "http://127.0.0.1:8000"
+
+    payload = {
+        "user_email": user_email,
+        "original_text": original_text,
+        "paraphrased_options": paraphrased_results,
+        "model_used": model_used,
+        "creativity": creativity,
+        "complexity_level": complexity_level,
+        "rouge_scores": rouge_scores,
+        "readability_scores": readability_scores
+    }
+
+    try:
+        resp = requests.post(f"{API_URL}/store_paraphrase", json=payload, timeout=10)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            paraphrase_id = data.get("paraphrase_id")  # ✅ backend now returns a single ID
+            st.success("✅ Paraphrase stored successfully in database")
+            return paraphrase_id
+
+        else:
+            st.error(f"❌ Failed to store paraphrase: {resp.text}")
+            return None
+
+    except requests.exceptions.RequestException as e:
+        st.error(f"⚠️ Could not connect to backend: {e}")
+        return None
 
 
 
@@ -267,7 +431,6 @@ def show_dashboard():
     
     
     with main_tab2:
-
         st.subheader("Summarize Text or PDF")
 
         col1, col2 = st.columns(2)
@@ -275,9 +438,9 @@ def show_dashboard():
             input_type = st.radio("Choose input type:", ["Plain Text","Text File","PDF File"])
             model_choice = st.selectbox(
                 "Select Model",
-                options=list(SUMMARIZATION_MODELS.keys()),  # ["bart", "t5", "pegasus"]
+                options=list(SUMMARIZATION_MODELS.keys()),
                 index=0
-                )
+            )
             summary_length = st.selectbox(
                 "Summary Length",
                 options=["short", "medium", "long"],
@@ -288,7 +451,7 @@ def show_dashboard():
             st.markdown("- Paste text or upload a .txt or .pdf file.\n- Choose a model and summary length.\n- Click 'Generate Summary'.")
 
         uploaded_file = None
-        text_input=""
+        text_input = ""
         if input_type == "Plain Text":
             text_input = st.text_area("Paste your text here", height=200)
         elif input_type == "Text File":
@@ -296,34 +459,37 @@ def show_dashboard():
         elif input_type == "PDF File":
             uploaded_file = st.file_uploader("Upload a PDF file", type=["pdf"], key="file_uploader_pdf")
 
-
         reference_input = st.text_area(
             "Reference Summary (optional for ROUGE evaluation)",
             height=150,
             help="Paste a human-written summary here to compute ROUGE metrics."
         )
+        
+        # 🧠 Initialize session keys
+        for key in ["last_summary_text", "last_original_text", "last_summary_id", "show_generated_summary"]:
+            if key not in st.session_state:
+                st.session_state[key] = None
 
         if 'last_summary' not in st.session_state:
             st.session_state['last_summary'] = None
             st.session_state['last_model'] = None
             st.session_state['last_length'] = None
 
+        # Set show flag to False initially
+        if "show_generated_summary" not in st.session_state:
+            st.session_state["show_generated_summary"] = False
+
         if st.button("Generate Summary"):
-            
             try:
-                
                 original_text_display = ""
 
                 if input_type == "Plain Text":
                     original_text_display = text_input.strip()
-
                 elif input_type == "Text File" and uploaded_file:
                     original_text_display = uploaded_file.getvalue().decode("utf-8").strip()
-
                 elif input_type == "PDF File" and uploaded_file:
                     with pdfplumber.open(io.BytesIO(uploaded_file.getvalue())) as pdf:
                         original_text_display = "\n".join(page.extract_text() or "" for page in pdf.pages).strip()
-
 
                 if not original_text_display:
                     st.error("No valid text found to summarize.")
@@ -346,114 +512,144 @@ def show_dashboard():
                         else:  # long
                             min_len, max_len = max(20, int(wc_orig * 0.3)), max(40, int(wc_orig * 0.8))
 
-
                         result = summarizer(original_text_display, min_length=min_len, max_length=max_len, do_sample=False)
                         summary_text_display = result[0]['summary_text'].strip()
 
                         wc_sum = len(summary_text_display.split())
                         compression = max(0, (1 - (wc_sum / wc_orig)) * 100) if wc_orig > 0 else 0
 
-
-                        col_orig, col_sum = st.columns(2)
-                        with col_orig:
-                            st.markdown("#### Original Text")
-                            st.caption(f"{wc_orig} words")
-                            st.text_area("Original", value=original_text_display[:15000], height=260)
-                        with col_sum:
-                            st.markdown("#### Summary")
-                            st.caption(f"{wc_sum} words")
-                            st.text_area("Summary", value=summary_text_display, height=260)
-                            st.markdown(f"**Compression:** {compression:.0f}%")
-
-                        
-                        st.session_state['last_summary'] = summary_text_display
-                        st.session_state['last_model'] = model_choice
-                        st.session_state['last_length'] = summary_length
-
-                        
-                        scores = {}
-                        if reference_input.strip():
-                            try:
-                                rouge = evaluate.load("rouge")
-                                scores = rouge.compute(
-                                    predictions=[summary_text_display],
-                                    references=[reference_input.strip()]
-                                )
-
-                                # ✅ move visualization inside the if block
-                                st.markdown("### ROUGE Evaluation")
-                                st.json(scores)
-
-                                df_scores = pd.DataFrame(list(scores.items()), columns=["Metric", "Score"])
-                                st.dataframe(df_scores)
-
-                                csv_bytes = df_scores.to_csv(index=False).encode()
-                                st.download_button("Download ROUGE CSV", data=csv_bytes, file_name="rouge_scores.csv")
-
-                                st.markdown("""
-                                    🔍 **What this shows:**  
-                                    The bars below compare your **generated summary** with the **reference summary**.  
-
-                                    - **ROUGE-1** → word overlap  
-                                    - **ROUGE-2** → two-word phrase overlap  
-                                    - **ROUGE-L** → longest common sequence  
-
-                                    Higher values = summary is closer in meaning to the reference.
-                                """)
-                                fig, ax = plt.subplots()
-                                ax.bar(df_scores['Metric'], df_scores['Score'], color="#3b82f6")
-                                ax.set_ylim(0, 1)
-                                ax.set_ylabel("Score")
-                                ax.set_title("ROUGE Scores")
-                                st.pyplot(fig)
-
-                            except Exception as e:
-                                st.error(f"ROUGE evaluation failed: {e}")
-                        else:
-                            st.info("⚠️ No reference summary provided, skipping ROUGE evaluation.")
-                           
-                        store_summary_db(
+                        # ✅ Generate summary_id FIRST
+                        summary_id = store_summary_db(
                             user_email=user_email,
                             original_text=original_text_display,
                             summary_text=summary_text_display,
                             model_used=model_choice,
                             summary_length=summary_length,
                             reference_summary=reference_input.strip(),
-                            rouge_scores=scores if reference_input.strip() else {}
+                            rouge_scores={}
                         )
+                        
+                        # ✅ Store in session state for persistence
+                        st.session_state["last_summary_text"] = summary_text_display
+                        st.session_state["last_original_text"] = original_text_display
+                        st.session_state["last_summary_id"] = summary_id
+                        st.session_state["show_generated_summary"] = True
+                        st.session_state['last_summary'] = summary_text_display
+                        st.session_state['last_model'] = model_choice
+                        st.session_state['last_length'] = summary_length
+
+                        # ✅ Force immediate rerun to show results
+                        st.rerun()
+
             except Exception as e:
                 st.error(f"An error occurred: {e}")
 
-    
-    def store_paraphrase_db(user_email, original_text, paraphrased_results, model_used, creativity, complexity_level, rouge_scores, readability_scores):
-        payload = {
-            "user_email": user_email,
-            "original_text": original_text,
-            "paraphrased_options": paraphrased_results,
-            "model_used": model_used,
-            "creativity": creativity,
-            "complexity_level": complexity_level,
-            "rouge_scores": rouge_scores,
-            "readability_scores": readability_scores
-        }
-        try:
-            resp = requests.post(f"{API_URL}/store_paraphrase", json=payload, timeout=10)
-            if resp.status_code == 200:
-                st.success("All paraphrases stored successfully in DB")
-            else:
-                st.error(f"Failed to store paraphrases: {resp.text}")
-        except requests.exceptions.RequestException as e:
-            st.error(f"Could not connect to backend: {e}")
+        # ✅ Show results and feedback AFTER generation (for reruns)
+        if st.session_state.get("show_generated_summary") and st.session_state["last_summary_text"]:
+            st.markdown("### 🧾 Generated Summary")
 
+            # Calculate word counts for display
+            wc_orig = len(st.session_state["last_original_text"].split())
+            wc_sum = len(st.session_state["last_summary_text"].split())
+            compression = max(0, (1 - (wc_sum / wc_orig)) * 100) if wc_orig > 0 else 0
+
+            col_orig, col_sum = st.columns(2)
+            with col_orig:
+                st.markdown("#### Original Text")
+                st.caption(f"{wc_orig} words")
+                st.text_area("Original", value=st.session_state["last_original_text"][:15000], height=260, key="last_orig_display")
+            
+            with col_sum:
+                st.markdown("#### Summary")
+                st.caption(f"{wc_sum} words")
+                st.text_area("Summary", value=st.session_state["last_summary_text"], height=260, key="last_sum_display")
+                st.markdown(f"**Compression:** {compression:.0f}%")
+
+            # ✅ ROUGE Evaluation (if reference was provided) - MOVED HERE for reruns
+            if reference_input.strip():
+                try:
+                    rouge = evaluate.load("rouge")
+                    scores = rouge.compute(
+                        predictions=[st.session_state["last_summary_text"]],
+                        references=[reference_input.strip()]
+                    )
+
+                    st.markdown("### ROUGE Evaluation")
+                    st.json(scores)
+
+                    df_scores = pd.DataFrame(list(scores.items()), columns=["Metric", "Score"])
+                    st.dataframe(df_scores)
+
+                    csv_bytes = df_scores.to_csv(index=False).encode()
+                    st.download_button(
+                        "Download ROUGE CSV", 
+                        data=csv_bytes, 
+                        file_name="rouge_scores.csv",
+                        key="rouge_csv_rerun"
+                    )
+
+                    st.markdown("""
+                        🔍 **What this shows:**  
+                        The bars below compare your **generated summary** with the **reference summary**.  
+
+                        - **ROUGE-1** → word overlap  
+                        - **ROUGE-2** → two-word phrase overlap  
+                        - **ROUGE-L** → longest common sequence  
+
+                        Higher values = summary is closer in meaning to the reference.
+                    """)
+                    fig, ax = plt.subplots()
+                    ax.bar(df_scores['Metric'], df_scores['Score'], color="#3b82f6")
+                    ax.set_ylim(0, 1)
+                    ax.set_ylabel("Score")
+                    ax.set_title("ROUGE Scores")
+                    st.pyplot(fig)
+
+                except Exception as e:
+                    st.error(f"ROUGE evaluation failed: {e}")
+            else:
+                st.info("⚠️ No reference summary provided, skipping ROUGE evaluation.")
+
+            # ✅ Download summary button
+            combined_text = f"Original:\n{st.session_state['last_original_text']}\n\nSummary:\n{st.session_state['last_summary_text']}"
+            st.download_button(
+                "📥 Download Summary", 
+                data=combined_text.encode("utf-8"),
+                file_name="summary_result.txt", 
+                mime="text/plain",
+                key="summary_download_rerun"
+            )
+
+            # ✅ Feedback Section
+            st.markdown("---")
+            st.markdown("### 💬 Feedback")
+            if st.session_state["last_summary_id"]:
+                feedback_ui("summary", st.session_state["last_summary_id"], user_email)            
+        
     def paraphrasing_ui(user_email):
         st.subheader("Paraphrasing & Analysis")
+
+        # ✅ Improved session state initialization
+        session_keys = {
+            "last_paraphrases": [],
+            "last_original_paraphrase": "",
+            "last_paraphrase_ids": [],
+            "show_generated_paraphrase": False,
+            "current_paraphrase_id": None
+        }
+        
+        for key, default_value in session_keys.items():
+            if key not in st.session_state:
+                st.session_state[key] = default_value
+
+        # ================= INPUT SECTION ==================
         input_method = st.radio("Choose input method:", ["Text Input", "File Upload"], horizontal=True)
         original_text = ""
 
         if input_method == "Text Input":
             original_text = st.text_area("Enter text to paraphrase", height=200)
         else:
-            uploaded_file = st.file_uploader("Upload a .txt, .pdf, or .docx file", type=["txt","pdf","docx"])
+            uploaded_file = st.file_uploader("Upload a .txt, .pdf, or .docx file", type=["txt", "pdf", "docx"])
             if uploaded_file:
                 file_bytes = uploaded_file.getvalue()
                 if uploaded_file.type == "application/pdf":
@@ -467,6 +663,7 @@ def show_dashboard():
                 else:
                     original_text = file_bytes.decode("utf-8")
 
+        # ================= SETTINGS ==================
         col1, col2 = st.columns(2)
         with col1:
             creativity = st.slider("Creativity", 0.5, 1.5, 1.0, 0.1)
@@ -488,42 +685,89 @@ def show_dashboard():
             "Intermediate": "Paraphrase the following text with moderate complexity suitable for intermediate readers:",
             "Advanced": "Paraphrase the following text with advanced vocabulary and sentence structure suitable for expert readers:"
         }
-        if "t5" in paraphrase_models[selected_model].lower():
-            prompt_text = "paraphrase: " + original_text
-        else:
-            prompt_text = complexity_prompt_map[complexity_level] + "\n" + original_text
 
-        if st.button("Generate & Analyze", type="primary") and original_text.strip():
-            para_pipe = load_paraphraser(paraphrase_models[selected_model])
-            outputs = para_pipe(
-                prompt_text,
-                num_return_sequences=3,
-                num_beams=5,
-                temperature=creativity,
-                max_length=max_len,
-                truncation=True
+        # ================= GENERATE BUTTON ==================
+        if st.button("Generate & Analyze", type="primary"):
+            if not original_text.strip():
+                st.warning("Please enter or upload text before generating.")
+            else:
+                # Prepare prompt text
+                if "t5" in paraphrase_models[selected_model].lower():
+                    prompt_text = "paraphrase: " + original_text
+                else:
+                    prompt_text = complexity_prompt_map[complexity_level] + "\n" + original_text
+
+                with st.spinner("Generating paraphrase..."):
+                    para_pipe = load_paraphraser(paraphrase_models[selected_model])
+                    outputs = para_pipe(
+                        prompt_text,
+                        num_return_sequences=1,
+                        num_beams=5,
+                        temperature=creativity,
+                        max_length=max_len,
+                        truncation=True
+                    )
+
+                    paraphrased_results = [o["generated_text"] for o in outputs]
+                    paraphrase_id = abs(hash(original_text)) % 1000000
+
+                    # ✅ Store in session state for reruns
+                    st.session_state["last_paraphrases"] = paraphrased_results
+                    st.session_state["last_original_paraphrase"] = original_text
+                    st.session_state["current_paraphrase_id"] = paraphrase_id
+                    st.session_state["show_generated_paraphrase"] = True
+
+                    # ✅ Force rerun to show results immediately
+                    st.rerun()
+
+        # ================= DISPLAY RESULTS (WORKS ON RERUNS) ==================
+        if st.session_state.get("show_generated_paraphrase") and st.session_state["last_paraphrases"]:
+            st.markdown("### ✨ Paraphrased Result")
+            
+            original_text = st.session_state["last_original_paraphrase"]
+            paraphrased_results = st.session_state["last_paraphrases"]
+            paraphrase_id = st.session_state["current_paraphrase_id"]
+
+            # Side-by-side display
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("#### Original Text")
+                st.text_area("Original", value=original_text, height=250, key="para_original_display")
+            with col2:
+                st.markdown("#### Paraphrased Text")
+                st.text_area("Paraphrased", value=paraphrased_results[0], height=250, key="para_paraphrased_display")
+
+            # Download button
+            combined_text = f"Original:\n{original_text}\n\nParaphrased:\n{paraphrased_results[0]}"
+            st.download_button(
+                "📥 Download Paraphrase", 
+                data=combined_text.encode("utf-8"),
+                file_name="paraphrased_result.txt", 
+                mime="text/plain",
+                key="para_download"
             )
-            paraphrased_results = [o["generated_text"] for o in outputs]
 
-            st.subheader("Paraphrased Options")
-            for i, txt in enumerate(paraphrased_results, 1):
-                st.write(f"**Option {i}:**")
-                st.info(txt)
-
+            # ================= ANALYSIS SECTION ==================
             import textstat, pandas as pd, plotly.express as px
-            complexity_data = [{"Source": "Original", "Score": textstat.flesch_reading_ease(original_text)}]
+            from rouge_score import rouge_scorer
+            from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
+            # Readability Analysis
+            complexity_data = [
+                {"Source": "Original", "Score": textstat.flesch_reading_ease(original_text)}
+            ]
             for i, txt in enumerate(paraphrased_results, 1):
                 complexity_data.append({"Source": f"Option {i}", "Score": textstat.flesch_reading_ease(txt)})
             df_complexity = pd.DataFrame(complexity_data)
 
-            st.subheader("Readability Analysis")
-            fig = px.bar(df_complexity, x="Source", y="Score",
-                        color="Source", title="Flesch Reading Ease", template="plotly_white")
+            st.subheader("📘 Readability Analysis")
+            fig = px.bar(df_complexity, x="Source", y="Score", color="Source",
+                        title="Flesch Reading Ease", template="plotly_white")
             fig.update_layout(showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
 
-            from rouge_score import rouge_scorer
-            scorer = rouge_scorer.RougeScorer(['rouge1','rouge2','rougeL'], use_stemmer=True)
+            # ROUGE Analysis
+            scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
             scores_data = []
             for i, txt in enumerate(paraphrased_results, 1):
                 scores = scorer.score(original_text, txt)
@@ -535,37 +779,31 @@ def show_dashboard():
                 })
             df_scores = pd.DataFrame(scores_data)
 
-            st.subheader("ROUGE Comparison")
-            fig2 = px.bar(
-                df_scores.melt(id_vars="Option", var_name="Metric", value_name="Score"),
-                x="Option", y="Score", color="Metric", barmode="group",
-                title="ROUGE F1-Scores vs Original", template="plotly_white"
-            )
+            st.subheader("📊 ROUGE Comparison")
+            fig2 = px.bar(df_scores.melt(id_vars="Option", var_name="Metric", value_name="Score"),
+                        x="Option", y="Score", color="Metric", barmode="group",
+                        title="ROUGE F1-Scores vs Original", template="plotly_white")
             st.plotly_chart(fig2, use_container_width=True)
 
-            from nltk.sentiment.vader import SentimentIntensityAnalyzer
+            # Sentiment Analysis
             sid = SentimentIntensityAnalyzer()
-
             sentiment_orig = sid.polarity_scores(original_text)
-            st.subheader("Sentiment Analysis (Original Text)")
-            pie_data_orig = {k: v for k, v in sentiment_orig.items() if k != 'compound'}
-            fig3 = px.pie(names=list(pie_data_orig.keys()), values=list(pie_data_orig.values()),
-                        title="Original Text Sentiment", template="plotly_white")
-            st.plotly_chart(fig3, use_container_width=True)
-            st.json(sentiment_orig)
+            sentiment_para = sid.polarity_scores(paraphrased_results[0])
 
-            sentiment_list = [sid.polarity_scores(txt) for txt in paraphrased_results]
-            avg_sentiment = {k: sum(d[k] for d in sentiment_list)/len(sentiment_list) for k in sentiment_list[0] if k != 'compound'}
-            st.subheader("Average Sentiment (Paraphrased Texts)")
-            fig4 = px.pie(names=list(avg_sentiment.keys()), values=list(avg_sentiment.values()),
-                        title="Paraphrases Average Sentiment", template="plotly_white")
-            st.plotly_chart(fig4, use_container_width=True)
-            st.json(avg_sentiment)
+            st.subheader("😊 Sentiment Comparison")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown("**Original Text Sentiment**")
+                fig3 = px.pie(names=list(sentiment_orig.keys())[:-1], values=list(sentiment_orig.values())[:-1],
+                            title="Original Sentiment", template="plotly_white")
+                st.plotly_chart(fig3, use_container_width=True)
+            with col_b:
+                st.markdown("**Paraphrased Text Sentiment**")
+                fig4 = px.pie(names=list(sentiment_para.keys())[:-1], values=list(sentiment_para.values())[:-1],
+                            title="Paraphrased Sentiment", template="plotly_white")
+                st.plotly_chart(fig4, use_container_width=True)
 
-            combined_text = "Original:\n" + original_text + "\n\n"
-            for i, txt in enumerate(paraphrased_results, 1):
-                combined_text += f"Option {i}:\n{txt}\n\n"
-            
+            # ✅ Store in database with analysis results
             store_paraphrase_db(
                 user_email=user_email,
                 original_text=original_text,
@@ -577,10 +815,12 @@ def show_dashboard():
                 readability_scores=df_complexity.to_dict(orient="records")
             )
 
-
-            st.download_button("📥 Download Paraphrases", data=combined_text.encode("utf-8"),
-                            file_name="paraphrased_results.txt", mime="text/plain")
-
+            # ✅ Feedback Section
+            st.markdown("---")
+            st.markdown("### 💬 Feedback")
+            if paraphrase_id:
+                feedback_ui("paraphrase", paraphrase_id, user_email)
+                
     with main_tab3:
         paraphrasing_ui(user_email)
 
